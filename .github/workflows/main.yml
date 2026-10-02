@@ -1,0 +1,212 @@
+name: PC Virtual Windows - RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-pc:
+    runs-on: windows-2022
+    timeout-minutes: 350
+
+    steps:
+
+      # ==============================
+      # ATIVAR RDP
+      # ==============================
+      - name: Ativar RDP
+        shell: powershell
+        run: |
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
+
+          Write-Host "RDP ativado."
+
+      # ==============================
+      # CRIAR USUÁRIO
+      # ==============================
+      - name: Criar usuário CloudPC
+        shell: powershell
+        run: |
+          $Username = "CloudPC"
+          $Password = "CloudPC123!@#"
+
+          $User = Get-LocalUser `
+            -Name $Username `
+            -ErrorAction SilentlyContinue
+
+          if (-not $User) {
+            $SecurePassword = ConvertTo-SecureString `
+              $Password `
+              -AsPlainText `
+              -Force
+
+            New-LocalUser `
+              -Name $Username `
+              -Password $SecurePassword `
+              -FullName "Cloud PC User"
+
+            Add-LocalGroupMember `
+              -Group "Administrators" `
+              -Member $Username
+          }
+
+          Write-Host "Usuário CloudPC configurado."
+
+      # ==============================
+      # CRIAR PASTAS
+      # ==============================
+      - name: Criar pastas do Windows
+        shell: powershell
+        run: |
+          $UserPath = "C:\Users\CloudPC"
+
+          $Folders = @(
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Pictures",
+            "Videos",
+            "Music"
+          )
+
+          foreach ($Folder in $Folders) {
+            New-Item `
+              -ItemType Directory `
+              -Path "$UserPath\$Folder" `
+              -Force | Out-Null
+          }
+
+          Write-Host "Pastas criadas."
+
+      # ==============================
+      # GOOGLE CHROME
+      # ==============================
+      - name: Instalar Google Chrome
+        shell: powershell
+        run: |
+          winget install `
+            --id Google.Chrome `
+            --exact `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+          Write-Host "Chrome instalado."
+
+      # ==============================
+      # ROBLOX STUDIO
+      # ==============================
+      - name: Instalar Roblox Studio
+        shell: powershell
+        run: |
+          $Installer = "$env:TEMP\RobloxStudioLauncherBeta.exe"
+
+          Invoke-WebRequest `
+            -Uri "https://setup.rbxcdn.com/RobloxStudioLauncherBeta.exe" `
+            -OutFile $Installer
+
+          Start-Process `
+            -FilePath $Installer `
+            -ArgumentList "-install" `
+            -Wait
+
+          Write-Host "Roblox Studio instalado."
+
+      # ==============================
+      # OBS STUDIO
+      # ==============================
+      - name: Instalar OBS Studio
+        shell: powershell
+        run: |
+          winget install `
+            --id OBSProject.OBSStudio `
+            --exact `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+          Write-Host "OBS Studio instalado."
+
+      # ==============================
+      # TAILSCALE
+      # ==============================
+      - name: Instalar e conectar Tailscale
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+
+        run: |
+          if (-not $env:TS_AUTHKEY) {
+            Write-Error "TS_AUTHKEY não foi encontrado nos GitHub Secrets."
+            exit 1
+          }
+
+          $Installer = "$env:TEMP\tailscale-setup.exe"
+
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
+            -OutFile $Installer
+
+          Start-Process `
+            -FilePath $Installer `
+            -ArgumentList "/quiet" `
+            -Wait
+
+          Start-Sleep -Seconds 5
+
+          & "C:\Program Files\Tailscale\tailscale.exe" up `
+            --authkey="$env:TS_AUTHKEY" `
+            --hostname="github-cloud-pc"
+
+          Write-Host "Tailscale conectado."
+
+      # ==============================
+      # MOSTRAR IP
+      # ==============================
+      - name: Mostrar dados do RDP
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 10
+
+          $IP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "          PC VIRTUAL ONLINE"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "IP Tailscale:"
+          Write-Host $IP
+          Write-Host ""
+          Write-Host "Usuário:"
+          Write-Host "CloudPC"
+          Write-Host ""
+          Write-Host "Senha:"
+          Write-Host "CloudPC123!@#"
+          Write-Host ""
+          Write-Host "Chrome        : OK"
+          Write-Host "Roblox Studio : OK"
+          Write-Host "OBS Studio    : OK"
+          Write-Host "RDP           : ATIVADO"
+          Write-Host ""
+          Write-Host "=========================================="
+
+      # ==============================
+      # MANTER EXECUÇÃO
+      # ==============================
+      - name: Manter runner ativo
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "$(Get-Date) - PC ONLINE"
+            Start-Sleep -Seconds 60
+          }
