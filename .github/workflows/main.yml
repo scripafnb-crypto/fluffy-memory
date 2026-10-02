@@ -6,13 +6,10 @@ on:
 jobs:
   windows-pc:
     runs-on: windows-2022
-    timeout-minutes: 350
+    timeout-minutes: 360
 
     steps:
 
-      # ==============================
-      # ATIVAR RDP
-      # ==============================
       - name: Ativar RDP
         shell: powershell
         run: |
@@ -30,40 +27,45 @@ jobs:
 
           Write-Host "RDP ativado."
 
-      # ==============================
-      # CRIAR USUÁRIO
-      # ==============================
       - name: Criar usuário CloudPC
         shell: powershell
         run: |
           $Username = "CloudPC"
-          $Password = "CloudPC123!@#"
+          $Password = "Vx7!Qp9#Lm2@Rt6$Zk8%Ws4&"
 
-          $User = Get-LocalUser `
+          $SecurePassword = ConvertTo-SecureString `
+            $Password `
+            -AsPlainText `
+            -Force
+
+          $ExistingUser = Get-LocalUser `
             -Name $Username `
             -ErrorAction SilentlyContinue
 
-          if (-not $User) {
-            $SecurePassword = ConvertTo-SecureString `
-              $Password `
-              -AsPlainText `
-              -Force
+          if ($ExistingUser) {
+
+            Set-LocalUser `
+              -Name $Username `
+              -Password $SecurePassword
+
+          } else {
 
             New-LocalUser `
               -Name $Username `
               -Password $SecurePassword `
-              -FullName "Cloud PC User"
+              -FullName "Cloud PC User" `
+              -Description "Cloud PC RDP User" `
+              -PasswordNeverExpires
 
-            Add-LocalGroupMember `
-              -Group "Administrators" `
-              -Member $Username
           }
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $Username `
+            -ErrorAction SilentlyContinue
 
           Write-Host "Usuário CloudPC configurado."
 
-      # ==============================
-      # CRIAR PASTAS
-      # ==============================
       - name: Criar pastas do Windows
         shell: powershell
         run: |
@@ -87,64 +89,29 @@ jobs:
 
           Write-Host "Pastas criadas."
 
-      # ==============================
-      # GOOGLE CHROME
-      # ==============================
       - name: Instalar Google Chrome
         shell: powershell
         run: |
-          winget install `
-            --id Google.Chrome `
-            --exact `
-            --silent `
-            --accept-package-agreements `
-            --accept-source-agreements
+          $ChromeInstaller = "$env:TEMP\ChromeSetup.exe"
+
+          Invoke-WebRequest `
+            -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" `
+            -OutFile $ChromeInstaller
+
+          Start-Process `
+            -FilePath $ChromeInstaller `
+            -ArgumentList "/silent", "/install" `
+            -Wait
 
           Write-Host "Chrome instalado."
 
-      # ==============================
-      # ROBLOX STUDIO
-      # ==============================
-      - name: Instalar Roblox Studio
-        shell: powershell
-        run: |
-          $Installer = "$env:TEMP\RobloxStudioLauncherBeta.exe"
-
-          Invoke-WebRequest `
-            -Uri "https://setup.rbxcdn.com/RobloxStudioLauncherBeta.exe" `
-            -OutFile $Installer
-
-          Start-Process `
-            -FilePath $Installer `
-            -ArgumentList "-install" `
-            -Wait
-
-          Write-Host "Roblox Studio instalado."
-
-      # ==============================
-      # OBS STUDIO
-      # ==============================
-      - name: Instalar OBS Studio
-        shell: powershell
-        run: |
-          winget install `
-            --id OBSProject.OBSStudio `
-            --exact `
-            --silent `
-            --accept-package-agreements `
-            --accept-source-agreements
-
-          Write-Host "OBS Studio instalado."
-
-      # ==============================
-      # TAILSCALE
-      # ==============================
       - name: Instalar e conectar Tailscale
         shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
 
         run: |
+
           if (-not $env:TS_AUTHKEY) {
             Write-Error "TS_AUTHKEY não foi encontrado nos GitHub Secrets."
             exit 1
@@ -163,49 +130,52 @@ jobs:
 
           Start-Sleep -Seconds 5
 
-          & "C:\Program Files\Tailscale\tailscale.exe" up `
+          $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $Tailscale)) {
+            Write-Error "Tailscale não foi instalado corretamente."
+            exit 1
+          }
+
+          & $Tailscale up `
             --authkey="$env:TS_AUTHKEY" `
             --hostname="github-cloud-pc"
 
+          Start-Sleep -Seconds 5
+
           Write-Host "Tailscale conectado."
 
-      # ==============================
-      # MOSTRAR IP
-      # ==============================
-      - name: Mostrar dados do RDP
+      - name: Mostrar dados do PC
         shell: powershell
         run: |
+
           Start-Sleep -Seconds 10
 
-          $IP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          $IP = & $Tailscale ip -4
 
           Write-Host ""
           Write-Host "=========================================="
           Write-Host "          PC VIRTUAL ONLINE"
           Write-Host "=========================================="
           Write-Host ""
-          Write-Host "IP Tailscale:"
-          Write-Host $IP
+          Write-Host "IP Tailscale: $IP"
+          Write-Host "Usuário: CloudPC"
+          Write-Host "Senha: Vx7!Qp9#Lm2@Rt6$Zk8%Ws4&"
           Write-Host ""
-          Write-Host "Usuário:"
-          Write-Host "CloudPC"
+          Write-Host "RDP: ATIVADO"
+          Write-Host "Chrome: INSTALADO"
+          Write-Host "Tailscale: CONECTADO"
           Write-Host ""
-          Write-Host "Senha:"
-          Write-Host "CloudPC123!@#"
-          Write-Host ""
-          Write-Host "Chrome        : OK"
-          Write-Host "Roblox Studio : OK"
-          Write-Host "OBS Studio    : OK"
-          Write-Host "RDP           : ATIVADO"
+          Write-Host "Duração máxima: 360 minutos"
           Write-Host ""
           Write-Host "=========================================="
 
-      # ==============================
-      # MANTER EXECUÇÃO
-      # ==============================
-      - name: Manter runner ativo
+      - name: Manter PC online
         shell: powershell
         run: |
+
           while ($true) {
             Write-Host "$(Get-Date) - PC ONLINE"
             Start-Sleep -Seconds 60
