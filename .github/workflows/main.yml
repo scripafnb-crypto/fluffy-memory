@@ -66,46 +66,7 @@ jobs:
 
           Write-Host "Usuário CloudPC configurado."
 
-      - name: Criar pastas do Windows
-        shell: powershell
-        run: |
-          $UserPath = "C:\Users\CloudPC"
-
-          $Folders = @(
-            "Desktop",
-            "Documents",
-            "Downloads",
-            "Pictures",
-            "Videos",
-            "Music"
-          )
-
-          foreach ($Folder in $Folders) {
-            New-Item `
-              -ItemType Directory `
-              -Path "$UserPath\$Folder" `
-              -Force | Out-Null
-          }
-
-          Write-Host "Pastas criadas."
-
-      - name: Instalar Google Chrome
-        shell: powershell
-        run: |
-          $ChromeInstaller = "$env:TEMP\ChromeSetup.exe"
-
-          Invoke-WebRequest `
-            -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" `
-            -OutFile $ChromeInstaller
-
-          Start-Process `
-            -FilePath $ChromeInstaller `
-            -ArgumentList "/silent", "/install" `
-            -Wait
-
-          Write-Host "Chrome instalado."
-
-      - name: Instalar e conectar Tailscale
+      - name: Instalar Tailscale
         shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
@@ -165,9 +126,7 @@ jobs:
           Write-Host "Senha: Vx7!Qp9#Lm2@Rt6$Zk8%Ws4&"
           Write-Host ""
           Write-Host "RDP: ATIVADO"
-          Write-Host "Chrome: INSTALADO"
           Write-Host "Tailscale: CONECTADO"
-          Write-Host ""
           Write-Host "Duração máxima: 360 minutos"
           Write-Host ""
           Write-Host "=========================================="
