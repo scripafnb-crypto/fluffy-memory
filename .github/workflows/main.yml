@@ -10,9 +10,26 @@ jobs:
 
     steps:
 
-      # ==========================================
-      # RDP + AUDIO
-      # ==========================================
+      - name: Marcar inicio do PC
+        shell: powershell
+        run: |
+
+          $Inicio = Get-Date
+          $Fim = $Inicio.AddMinutes(360)
+
+          Set-Content `
+            -Path "C:\ProgramData\CloudPC-EndTime.txt" `
+            -Value $Fim.ToString("o") `
+            -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "INICIO DO CLOUD PC"
+          Write-Host "Inicio: $Inicio"
+          Write-Host "Fim previsto: $Fim"
+          Write-Host "Duracao: 360 minutos"
+          Write-Host "=========================================="
+
       - name: Ativar RDP e Audio
         shell: powershell
         run: |
@@ -83,29 +100,39 @@ jobs:
 
           Write-Host "RDP e audio configurados."
 
-      # ==========================================
-      # CRIAR USUARIO AUTOMATICAMENTE
-      # ==========================================
       - name: Criar CloudPC
         shell: powershell
         run: |
 
-          Write-Host "Criando usuario..."
+          Write-Host "Criando usuario CloudPC..."
 
           $Username = "CloudPC"
 
-          # Gerar senha aleatoria
-          $Chars = (
-            "ABCDEFGHJKLMNPQRSTUVWXYZ" +
-            "abcdefghijkmnopqrstuvwxyz" +
-            "23456789" +
-            "!@#$%&*"
-          ).ToCharArray()
+          $Upper = "ABCDEFGHJKLMNPQRSTUVWXYZ".ToCharArray()
+          $Lower = "abcdefghijkmnopqrstuvwxyz".ToCharArray()
+          $Numbers = "23456789".ToCharArray()
+          $Special = "!@#$%&*".ToCharArray()
+
+          $AllChars = @(
+            $Upper
+            $Lower
+            $Numbers
+            $Special
+          )
+
+          $PasswordChars = @()
+
+          $PasswordChars += ($Upper | Get-Random)
+          $PasswordChars += ($Lower | Get-Random)
+          $PasswordChars += ($Numbers | Get-Random)
+          $PasswordChars += ($Special | Get-Random)
+
+          1..16 | ForEach-Object {
+            $PasswordChars += ($AllChars | Get-Random)
+          }
 
           $Password = -join (
-            1..20 | ForEach-Object {
-              $Chars | Get-Random
-            }
+            $PasswordChars | Get-Random -Count $PasswordChars.Count
           )
 
           $SecurePassword = ConvertTo-SecureString `
@@ -132,6 +159,7 @@ jobs:
               -FullName "Cloud PC" `
               -Description "Cloud PC RDP User" `
               -PasswordNeverExpires
+
           }
 
           Add-LocalGroupMember `
@@ -139,14 +167,12 @@ jobs:
             -Member $Username `
             -ErrorAction SilentlyContinue
 
-          # Guardar para os próximos passos
           "CLOUDPC_PASSWORD=$Password" >> $env:GITHUB_ENV
 
-          Write-Host "Usuario criado."
+          Write-Host ""
+          Write-Host "Usuario criado: CloudPC"
+          Write-Host "Senha gerada com sucesso."
 
-      # ==========================================
-      # TAILSCALE
-      # ==========================================
       - name: Instalar Tailscale
         shell: powershell
         env:
@@ -154,18 +180,33 @@ jobs:
 
         run: |
 
-          if (-not $env:TS_AUTHKEY) {
-            Write-Error "Configure o Secret TS_AUTHKEY."
+          Write-Host "Verificando Auth Key..."
+
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
+
+            Write-Error "O Secret TS_AUTHKEY nao existe ou esta vazio."
             exit 1
+
           }
 
           $Installer = "$env:TEMP\tailscale-setup.exe"
 
           Write-Host "Baixando Tailscale..."
 
-          Invoke-WebRequest `
-            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
-            -OutFile $Installer
+          try {
+
+            Invoke-WebRequest `
+              -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
+              -OutFile $Installer `
+              -UseBasicParsing
+
+          }
+          catch {
+
+            Write-Error "Falha ao baixar o Tailscale."
+            exit 1
+
+          }
 
           Write-Host "Instalando Tailscale..."
 
@@ -179,15 +220,46 @@ jobs:
           $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $Tailscale)) {
+
             Write-Error "Tailscale nao foi instalado."
             exit 1
+
           }
+
+          Write-Host "Tailscale encontrado."
+          Write-Host "Conectando..."
 
           & $Tailscale up `
             --authkey="$env:TS_AUTHKEY" `
             --hostname="github-cloud-pc-v3"
 
+          if ($LASTEXITCODE -ne 0) {
+
+            Write-Error ""
+            Write-Error "=========================================="
+            Write-Error "FALHA NO TAILSCALE"
+            Write-Error "=========================================="
+            Write-Error ""
+            Write-Error "A Auth Key TS_AUTHKEY foi rejeitada."
+            Write-Error "Crie uma nova Auth Key no Tailscale."
+            Write-Error "Depois atualize o Secret TS_AUTHKEY no GitHub."
+            Write-Error ""
+            Write-Error "O workflow foi interrompido."
+            Write-Error "=========================================="
+
+            exit 1
+          }
+
           Start-Sleep -Seconds 10
+
+          $IP = & $Tailscale ip -4
+
+          if ([string]::IsNullOrWhiteSpace($IP)) {
+
+            Write-Error "Tailscale conectou, mas nao recebeu um IP."
+            exit 1
+
+          }
 
           Set-Service `
             -Name "Tailscale" `
@@ -198,11 +270,12 @@ jobs:
             -Name "Tailscale" `
             -ErrorAction SilentlyContinue
 
-          Write-Host "Tailscale conectado."
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "TAILSCALE CONECTADO"
+          Write-Host "IP: $IP"
+          Write-Host "=========================================="
 
-      # ==========================================
-      # AUTO RECOVERY
-      # ==========================================
       - name: Criar Auto Recovery
         shell: powershell
         run: |
@@ -213,7 +286,10 @@ jobs:
             'Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -ErrorAction SilentlyContinue'
             'Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1 -ErrorAction SilentlyContinue'
             'Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue'
+            'Set-Service -Name "TermService" -StartupType Automatic -ErrorAction SilentlyContinue'
             'Start-Service -Name "TermService" -ErrorAction SilentlyContinue'
+            'Set-Service -Name "AudioEndpointBuilder" -StartupType Automatic -ErrorAction SilentlyContinue'
+            'Set-Service -Name "Audiosrv" -StartupType Automatic -ErrorAction SilentlyContinue'
             'Start-Service -Name "AudioEndpointBuilder" -ErrorAction SilentlyContinue'
             'Start-Service -Name "Audiosrv" -ErrorAction SilentlyContinue'
             'Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue'
@@ -245,12 +321,11 @@ jobs:
 
           Write-Host "Auto Recovery criado."
 
-      # ==========================================
-      # MODO DESEMPENHO
-      # ==========================================
       - name: Modo desempenho
         shell: powershell
         run: |
+
+          Write-Host "Ativando modo desempenho..."
 
           powercfg /setactive SCHEME_MIN
 
@@ -277,15 +352,19 @@ jobs:
 
           Write-Host "Modo desempenho ativado."
 
-      # ==========================================
-      # ROBLOX STUDIO
-      # ==========================================
       - name: Preparar Roblox Studio
         shell: powershell
         run: |
 
+          Write-Host "Preparando Roblox Studio..."
+
           New-Item `
             -Path "C:\CloudPC\RobloxProjects" `
+            -ItemType Directory `
+            -Force | Out-Null
+
+          New-Item `
+            -Path "C:\CloudPC\Tools" `
             -ItemType Directory `
             -Force | Out-Null
 
@@ -304,15 +383,17 @@ jobs:
               ForEach-Object {
 
                 try {
+
                   $_.PriorityClass = "AboveNormal"
+
                 }
                 catch {}
+
               }
           }
 
-      # ==========================================
-      # CLIPBOARD + AUDIO RDP
-      # ==========================================
+          Write-Host "Roblox Studio preparado."
+
       - name: Configurar redirecionamento
         shell: powershell
         run: |
@@ -320,9 +401,11 @@ jobs:
           $RDP = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
 
           if (-not (Test-Path $RDP)) {
+
             New-Item `
               -Path $RDP `
               -Force | Out-Null
+
           }
 
           Set-ItemProperty `
@@ -333,15 +416,20 @@ jobs:
 
           Set-ItemProperty `
             -Path $RDP `
+            -Name "fDisableAudioCapture" `
+            -Type DWord `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path $RDP `
             -Name "fDisableClip" `
             -Type DWord `
             -Value 0
 
-          Write-Host "Clipboard e audio preparados."
+          Write-Host "Audio configurado."
 
-      # ==========================================
-      # DIAGNOSTICO
-      # ==========================================
+          Write-Host "Clipboard configurado."
+
       - name: Diagnostico
         shell: powershell
         run: |
@@ -359,9 +447,19 @@ jobs:
             2
           )
 
+          $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          $IP = "Indisponivel"
+
+          if (Test-Path $Tailscale) {
+
+            $IP = & $Tailscale ip -4
+
+          }
+
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "          DIAGNOSTICO"
+          Write-Host "             DIAGNOSTICO"
           Write-Host "=========================================="
           Write-Host ""
           Write-Host "Sistema: $($OS.Caption)"
@@ -371,25 +469,40 @@ jobs:
           Write-Host "RDP: $((Get-Service TermService).Status)"
           Write-Host "Audio: $((Get-Service Audiosrv).Status)"
           Write-Host "Tailscale: $((Get-Service Tailscale).Status)"
+          Write-Host "IP Tailscale: $IP"
           Write-Host ""
           Write-Host "=========================================="
 
-      # ==========================================
-      # DADOS DE CONEXAO
-      # ==========================================
       - name: Mostrar dados
         shell: powershell
         run: |
 
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 5
 
           $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
+          if (-not (Test-Path $Tailscale)) {
+
+            Write-Error "Tailscale nao encontrado."
+            exit 1
+
+          }
+
           $IP = & $Tailscale ip -4
+
+          if ([string]::IsNullOrWhiteSpace($IP)) {
+
+            Write-Error "Nao foi possivel obter o IP do Tailscale."
+            exit 1
+
+          }
+
+          $Fim = Get-Content `
+            -Path "C:\ProgramData\CloudPC-EndTime.txt"
 
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "        CLOUD PC V3 ONLINE"
+          Write-Host "          CLOUD PC ONLINE"
           Write-Host "=========================================="
           Write-Host ""
           Write-Host "IP Tailscale:"
@@ -407,45 +520,88 @@ jobs:
           Write-Host "Auto Recovery: OK"
           Write-Host "Desempenho: OK"
           Write-Host ""
+          Write-Host "Fim previsto:"
+          Write-Host "$Fim"
+          Write-Host ""
           Write-Host "Duracao maxima: 360 minutos"
           Write-Host ""
           Write-Host "=========================================="
 
-      # ==========================================
-      # MONITOR
-      # ==========================================
       - name: Monitorar PC
         shell: powershell
         run: |
 
-          $Inicio = Get-Date
-          $Limite = $Inicio.AddMinutes(360)
+          $FimTexto = Get-Content `
+            -Path "C:\ProgramData\CloudPC-EndTime.txt"
+
+          $Limite = [DateTime]::Parse($FimTexto)
 
           while ($true) {
 
             $Agora = Get-Date
+
             $Restante = $Limite - $Agora
 
             if ($Restante.TotalSeconds -le 0) {
-              Write-Host "Tempo maximo atingido."
+
+              Write-Host ""
+              Write-Host "=========================================="
+              Write-Host "TEMPO MAXIMO ATINGIDO"
+              Write-Host "=========================================="
+
               break
+
             }
 
-            $CPU = (
-              Get-Counter `
-                '\Processor(_Total)\% Processor Time'
-            ).CounterSamples.CookedValue
+            try {
 
-            $CPU = [math]::Round($CPU, 1)
+              $CPU = (
+                Get-Counter `
+                  '\Processor(_Total)\% Processor Time'
+              ).CounterSamples.CookedValue
 
-            $OS = Get-CimInstance Win32_OperatingSystem
+              $CPU = [math]::Round(
+                $CPU,
+                1
+              )
 
-            $TotalRAM = $OS.TotalVisibleMemorySize
-            $FreeRAM = $OS.FreePhysicalMemory
+            }
+            catch {
 
-            $RAM = 100 - (($FreeRAM / $TotalRAM) * 100)
+              $CPU = "N/A"
 
-            $RAM = [math]::Round($RAM, 1)
+            }
+
+            try {
+
+              $OS = Get-CimInstance `
+                Win32_OperatingSystem
+
+              $TotalRAM = $OS.TotalVisibleMemorySize
+              $FreeRAM = $OS.FreePhysicalMemory
+
+              $RAM = 100 - (
+                ($FreeRAM / $TotalRAM) * 100
+              )
+
+              $RAM = [math]::Round(
+                $RAM,
+                1
+              )
+
+            }
+            catch {
+
+              $RAM = "N/A"
+
+            }
+
+            $Horas = [math]::Floor(
+              $Restante.TotalHours
+            )
+
+            $Minutos = $Restante.Minutes
+            $Segundos = $Restante.Seconds
 
             Write-Host ""
             Write-Host "=========================================="
@@ -453,8 +609,9 @@ jobs:
             Write-Host "PC ONLINE"
             Write-Host "CPU: $CPU %"
             Write-Host "RAM: $RAM %"
-            Write-Host "Tempo restante: $($Restante.Hours)h $($Restante.Minutes)m"
+            Write-Host "Tempo restante: ${Horas}h ${Minutos}m ${Segundos}s"
             Write-Host "=========================================="
 
             Start-Sleep -Seconds 60
+
           }
