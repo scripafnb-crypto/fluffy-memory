@@ -1,4 +1,4 @@
-name: PC Virtual Windows - RDP
+name: PC Virtual Windows V2
 
 on:
   workflow_dispatch:
@@ -10,39 +10,111 @@ jobs:
 
     steps:
 
-      - name: Ativar RDP
+      # ==========================================
+      # 1. RDP + ÁUDIO
+      # ==========================================
+      - name: Configurar RDP e Audio
         shell: powershell
         run: |
+
+          Write-Host "Configurando RDP..."
+
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
             -Value 0
-
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
             -Name "UserAuthentication" `
             -Value 1
 
-          Write-Host "RDP ativado."
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
 
-      - name: Criar usuário CloudPC
+          Set-Service `
+            -Name "TermService" `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          # ======================================
+          # AUDIO
+          # ======================================
+
+          Set-Service `
+            -Name "Audiosrv" `
+            -StartupType Automatic `
+            -ErrorAction SilentlyContinue
+
+          Set-Service `
+            -Name "AudioEndpointBuilder" `
+            -StartupType Automatic `
+            -ErrorAction SilentlyContinue
+
+          Start-Service `
+            -Name "AudioEndpointBuilder" `
+            -ErrorAction SilentlyContinue
+
+          Start-Service `
+            -Name "Audiosrv" `
+            -ErrorAction SilentlyContinue
+
+          $Policy = `
+            "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+
+          if (-not (Test-Path $Policy)) {
+            New-Item `
+              -Path $Policy `
+              -Force | Out-Null
+          }
+
+          # Permitir reprodução de áudio RDP
+          Set-ItemProperty `
+            -Path $Policy `
+            -Name "fDisableAudio" `
+            -Type DWord `
+            -Value 0
+
+          # Permitir áudio do cliente
+          Set-ItemProperty `
+            -Path $Policy `
+            -Name "fDisableAudioCapture" `
+            -Type DWord `
+            -Value 0
+
+          Write-Host "RDP + AUDIO configurados."
+
+      # ==========================================
+      # 2. USUÁRIO
+      # ==========================================
+      - name: Criar CloudPC
         shell: powershell
+        env:
+          CLOUDPC_PASSWORD: ${{ secrets.CLOUDPC_PASSWORD }}
+
         run: |
+
+          if (-not $env:CLOUDPC_PASSWORD) {
+            Write-Error "Configure o Secret CLOUDPC_PASSWORD."
+            exit 1
+          }
+
           $Username = "CloudPC"
-          $Password = "Vx7!Qp9#Lm2@Rt6$Zk8%Ws4&"
 
           $SecurePassword = ConvertTo-SecureString `
-            $Password `
+            $env:CLOUDPC_PASSWORD `
             -AsPlainText `
             -Force
 
-          $ExistingUser = Get-LocalUser `
+          $User = Get-LocalUser `
             -Name $Username `
             -ErrorAction SilentlyContinue
 
-          if ($ExistingUser) {
+          if ($User) {
 
             Set-LocalUser `
               -Name $Username `
@@ -53,10 +125,9 @@ jobs:
             New-LocalUser `
               -Name $Username `
               -Password $SecurePassword `
-              -FullName "Cloud PC User" `
+              -FullName "Cloud PC" `
               -Description "Cloud PC RDP User" `
               -PasswordNeverExpires
-
           }
 
           Add-LocalGroupMember `
@@ -64,8 +135,11 @@ jobs:
             -Member $Username `
             -ErrorAction SilentlyContinue
 
-          Write-Host "Usuário CloudPC configurado."
+          Write-Host "CloudPC configurado."
 
+      # ==========================================
+      # 3. TAILSCALE
+      # ==========================================
       - name: Instalar Tailscale
         shell: powershell
         env:
@@ -74,11 +148,11 @@ jobs:
         run: |
 
           if (-not $env:TS_AUTHKEY) {
-            Write-Error "TS_AUTHKEY não foi encontrado nos GitHub Secrets."
+            Write-Error "Configure o Secret TS_AUTHKEY."
             exit 1
           }
 
-          $Installer = "$env:TEMP\tailscale-setup.exe"
+          $Installer = "$env:TEMP\tailscale.exe"
 
           Invoke-WebRequest `
             -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
@@ -89,53 +163,430 @@ jobs:
             -ArgumentList "/quiet" `
             -Wait
 
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 8
 
-          $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+          $Tailscale = `
+            "C:\Program Files\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $Tailscale)) {
-            Write-Error "Tailscale não foi instalado corretamente."
+            Write-Error "Tailscale não foi instalado."
             exit 1
           }
 
           & $Tailscale up `
             --authkey="$env:TS_AUTHKEY" `
-            --hostname="github-cloud-pc"
+            --hostname="github-cloud-pc-v2"
 
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 10
+
+          Set-Service `
+            -Name "Tailscale" `
+            -StartupType Automatic `
+            -ErrorAction SilentlyContinue
+
+          Start-Service `
+            -Name "Tailscale" `
+            -ErrorAction SilentlyContinue
 
           Write-Host "Tailscale conectado."
 
-      - name: Mostrar dados do PC
+      # ==========================================
+      # 4. AUTO-RECOVERY
+      # ==========================================
+      - name: Criar Auto Recovery
+        shell: powershell
+        run: |
+
+          $Recovery = "C:\ProgramData\CloudPC-Recovery.ps1"
+
+          @'
+# CLOUD PC AUTO RECOVERY
+
+# RDP
+Set-ItemProperty `
+  -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+  -Name "fDenyTSConnections" `
+  -Value 0 `
+  -ErrorAction SilentlyContinue
+
+Set-ItemProperty `
+  -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+  -Name "UserAuthentication" `
+  -Value 1 `
+  -ErrorAction SilentlyContinue
+
+Enable-NetFirewallRule `
+  -DisplayGroup "Remote Desktop" `
+  -ErrorAction SilentlyContinue
+
+Start-Service `
+  -Name "TermService" `
+  -ErrorAction SilentlyContinue
+
+# AUDIO
+Start-Service `
+  -Name "AudioEndpointBuilder" `
+  -ErrorAction SilentlyContinue
+
+Start-Service `
+  -Name "Audiosrv" `
+  -ErrorAction SilentlyContinue
+
+# TAILSCALE
+Start-Service `
+  -Name "Tailscale" `
+  -ErrorAction SilentlyContinue
+'@ | Set-Content `
+            -Path $Recovery `
+            -Encoding UTF8
+
+          $Action = New-ScheduledTaskAction `
+            -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Recovery`""
+
+          $Trigger = New-ScheduledTaskTrigger `
+            -AtStartup
+
+          $Principal = New-ScheduledTaskPrincipal `
+            -UserId "SYSTEM" `
+            -LogonType ServiceAccount `
+            -RunLevel Highest
+
+          Register-ScheduledTask `
+            -TaskName "CloudPC-AutoRecovery" `
+            -Action $Action `
+            -Trigger $Trigger `
+            -Principal $Principal `
+            -Force
+
+          Write-Host "Auto Recovery criado."
+
+      # ==========================================
+      # 5. MODO DESEMPENHO
+      # ==========================================
+      - name: Otimizar desempenho
+        shell: powershell
+        run: |
+
+          Write-Host "Aplicando otimizações..."
+
+          # Plano de energia de alto desempenho
+          powercfg /setactive SCHEME_MIN
+
+          # Desativar alguns efeitos visuais
+          $Visual = `
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
+
+          New-Item `
+            -Path $Visual `
+            -Force | Out-Null
+
+          Set-ItemProperty `
+            -Path $Visual `
+            -Name "VisualFXSetting" `
+            -Type DWord `
+            -Value 2
+
+          # Desativar transparência
+          $Personalize = `
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+          Set-ItemProperty `
+            -Path $Personalize `
+            -Name "EnableTransparency" `
+            -Type DWord `
+            -Value 0 `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Modo desempenho aplicado."
+
+      # ==========================================
+      # 6. OTIMIZAÇÃO ROBLOX STUDIO
+      # ==========================================
+      - name: Preparar para Roblox Studio
+        shell: powershell
+        run: |
+
+          Write-Host "Preparando ambiente para Roblox Studio..."
+
+          # Prioridade de processos interativos
+          $Apps = @(
+            "RobloxStudioBeta",
+            "RobloxPlayerBeta"
+          )
+
+          foreach ($App in $Apps) {
+
+            Get-Process -Name $App `
+              -ErrorAction SilentlyContinue |
+              ForEach-Object {
+
+                try {
+                  $_.PriorityClass = "AboveNormal"
+                  Write-Host "$App otimizado."
+                }
+                catch {}
+              }
+          }
+
+          # Criar pasta para projetos
+          New-Item `
+            -Path "C:\CloudPC\RobloxProjects" `
+            -ItemType Directory `
+            -Force | Out-Null
+
+          Write-Host "Pasta RobloxProjects criada."
+
+      # ==========================================
+      # 7. RESOLUÇÃO / EXPERIÊNCIA REMOTA
+      # ==========================================
+      - name: Otimizar experiência RDP
+        shell: powershell
+        run: |
+
+          Write-Host "Configurando experiência RDP..."
+
+          $RDP = `
+            "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+
+          if (-not (Test-Path $RDP)) {
+            New-Item `
+              -Path $RDP `
+              -Force | Out-Null
+          }
+
+          # Permitir áudio
+          Set-ItemProperty `
+            -Path $RDP `
+            -Name "fDisableAudio" `
+            -Type DWord `
+            -Value 0
+
+          # Permitir clipboard
+          Set-ItemProperty `
+            -Path $RDP `
+            -Name "fDisableClip" `
+            -Type DWord `
+            -Value 0
+
+          Write-Host "RDP preparado."
+
+      # ==========================================
+      # 8. DIAGNÓSTICO
+      # ==========================================
+      - name: Diagnóstico do PC
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "          DIAGNÓSTICO CLOUD PC"
+          Write-Host "=========================================="
+
+          $Computer = Get-CimInstance `
+            Win32_ComputerSystem
+
+          $OS = Get-CimInstance `
+            Win32_OperatingSystem
+
+          $RAMTotal = `
+            [math]::Round(
+              $Computer.TotalPhysicalMemory / 1GB,
+              2
+            )
+
+          $RAMLivre = `
+            [math]::Round(
+              $OS.FreePhysicalMemory / 1MB,
+              2
+            )
+
+          $RAMUsada = `
+            [math]::Round(
+              $RAMTotal - $RAMLivre,
+              2
+            )
+
+          Write-Host ""
+          Write-Host "Sistema:"
+          Write-Host $OS.Caption
+
+          Write-Host ""
+          Write-Host "RAM total:"
+          Write-Host "$RAMTotal GB"
+
+          Write-Host ""
+          Write-Host "RAM usada:"
+          Write-Host "$RAMUsada GB"
+
+          Write-Host ""
+          Write-Host "RAM livre:"
+          Write-Host "$RAMLivre GB"
+
+          Write-Host ""
+          Write-Host "CPU:"
+
+          Get-CimInstance `
+            Win32_Processor |
+            Select-Object -First 1 |
+            ForEach-Object {
+              Write-Host $_.Name
+            }
+
+          Write-Host ""
+          Write-Host "Disco:"
+
+          Get-CimInstance `
+            Win32_LogicalDisk `
+            -Filter "DeviceID='C:'" |
+            ForEach-Object {
+
+              $Total = `
+                [math]::Round(
+                  $_.Size / 1GB,
+                  2
+                )
+
+              $Free = `
+                [math]::Round(
+                  $_.FreeSpace / 1GB,
+                  2
+                )
+
+              Write-Host "Total: $Total GB"
+              Write-Host "Livre: $Free GB"
+            }
+
+          Write-Host ""
+          Write-Host "Serviços:"
+
+          Write-Host "RDP:"
+          (Get-Service TermService).Status
+
+          Write-Host "Áudio:"
+          (Get-Service Audiosrv).Status
+
+          Write-Host "Audio Endpoint:"
+          (Get-Service AudioEndpointBuilder).Status
+
+          Write-Host "Tailscale:"
+          (Get-Service Tailscale).Status
+
+          Write-Host ""
+          Write-Host "=========================================="
+
+      # ==========================================
+      # 9. VOLUME
+      # ==========================================
+      - name: Preparar controle de volume
+        shell: powershell
+        run: |
+
+          Write-Host "Configurando áudio..."
+
+          # Garantir que o serviço esteja ativo
+          Start-Service `
+            -Name "Audiosrv" `
+            -ErrorAction SilentlyContinue
+
+          Start-Service `
+            -Name "AudioEndpointBuilder" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Áudio pronto para redirecionamento RDP."
+
+      # ==========================================
+      # 10. INFORMAÇÕES FINAIS
+      # ==========================================
+      - name: Mostrar conexão
         shell: powershell
         run: |
 
           Start-Sleep -Seconds 10
 
-          $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+          $Tailscale = `
+            "C:\Program Files\Tailscale\tailscale.exe"
 
           $IP = & $Tailscale ip -4
 
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "          PC VIRTUAL ONLINE"
+          Write-Host "        CLOUD PC V2 ONLINE"
           Write-Host "=========================================="
           Write-Host ""
-          Write-Host "IP Tailscale: $IP"
-          Write-Host "Usuário: CloudPC"
-          Write-Host "Senha: Vx7!Qp9#Lm2@Rt6$Zk8%Ws4&"
+          Write-Host "IP Tailscale:"
+          Write-Host "$IP"
           Write-Host ""
-          Write-Host "RDP: ATIVADO"
-          Write-Host "Tailscale: CONECTADO"
+          Write-Host "Usuário:"
+          Write-Host "CloudPC"
+          Write-Host ""
+          Write-Host "Senha:"
+          Write-Host "Secret CLOUDPC_PASSWORD"
+          Write-Host ""
+          Write-Host "RDP: OK"
+          Write-Host "Tailscale: OK"
+          Write-Host "Áudio: OK"
+          Write-Host "Auto Recovery: OK"
+          Write-Host "Modo desempenho: OK"
+          Write-Host "Roblox Studio: preparado"
+          Write-Host ""
           Write-Host "Duração máxima: 360 minutos"
           Write-Host ""
           Write-Host "=========================================="
 
-      - name: Manter PC online
+      # ==========================================
+      # 11. MONITOR CPU/RAM + TEMPO
+      # ==========================================
+      - name: Monitorar PC
         shell: powershell
         run: |
 
+          $Inicio = Get-Date
+          $Limite = $Inicio.AddMinutes(360)
+
           while ($true) {
-            Write-Host "$(Get-Date) - PC ONLINE"
+
+            $Agora = Get-Date
+
+            $Restante = $Limite - $Agora
+
+            if ($Restante.TotalSeconds -le 0) {
+              Write-Host "Tempo máximo atingido."
+              break
+            }
+
+            # CPU
+            $CPU = `
+              (Get-Counter `
+                '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
+
+            $CPU = `
+              [math]::Round($CPU, 1)
+
+            # RAM
+            $OS = `
+              Get-CimInstance Win32_OperatingSystem
+
+            $TotalRAM = `
+              $OS.TotalVisibleMemorySize
+
+            $FreeRAM = `
+              $OS.FreePhysicalMemory
+
+            $UsedRAM = `
+              100 - (($FreeRAM / $TotalRAM) * 100)
+
+            $UsedRAM = `
+              [math]::Round($UsedRAM, 1)
+
+            Write-Host ""
+            Write-Host "=========================================="
+            Write-Host "$(Get-Date)"
+            Write-Host "PC ONLINE"
+            Write-Host "CPU: $CPU %"
+            Write-Host "RAM: $UsedRAM %"
+            Write-Host "Tempo restante: $($Restante.Hours)h $($Restante.Minutes)m"
+            Write-Host "=========================================="
+
             Start-Sleep -Seconds 60
           }
