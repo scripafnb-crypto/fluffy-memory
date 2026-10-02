@@ -1,4 +1,4 @@
-name: PC Virtual Windows V2
+name: PC Virtual Windows V3
 
 on:
   workflow_dispatch:
@@ -10,9 +10,13 @@ jobs:
 
     steps:
 
+      # ==========================================
+      # RDP + AUDIO
+      # ==========================================
       - name: Ativar RDP e Audio
         shell: powershell
         run: |
+
           Write-Host "Configurando RDP..."
 
           Set-ItemProperty `
@@ -60,7 +64,9 @@ jobs:
           $Policy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
 
           if (-not (Test-Path $Policy)) {
-            New-Item -Path $Policy -Force | Out-Null
+            New-Item `
+              -Path $Policy `
+              -Force | Out-Null
           }
 
           Set-ItemProperty `
@@ -77,20 +83,33 @@ jobs:
 
           Write-Host "RDP e audio configurados."
 
-      - name: Criar usuario CloudPC
+      # ==========================================
+      # CRIAR USUARIO AUTOMATICAMENTE
+      # ==========================================
+      - name: Criar CloudPC
         shell: powershell
-        env:
-          CLOUDPC_PASSWORD: ${{ secrets.CLOUDPC_PASSWORD }}
         run: |
-          if (-not $env:CLOUDPC_PASSWORD) {
-            Write-Error "Configure o Secret CLOUDPC_PASSWORD."
-            exit 1
-          }
+
+          Write-Host "Criando usuario..."
 
           $Username = "CloudPC"
 
+          # Gerar senha aleatoria
+          $Chars = (
+            "ABCDEFGHJKLMNPQRSTUVWXYZ" +
+            "abcdefghijkmnopqrstuvwxyz" +
+            "23456789" +
+            "!@#$%&*"
+          ).ToCharArray()
+
+          $Password = -join (
+            1..20 | ForEach-Object {
+              $Chars | Get-Random
+            }
+          )
+
           $SecurePassword = ConvertTo-SecureString `
-            $env:CLOUDPC_PASSWORD `
+            $Password `
             -AsPlainText `
             -Force
 
@@ -99,11 +118,14 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($User) {
+
             Set-LocalUser `
               -Name $Username `
               -Password $SecurePassword
+
           }
           else {
+
             New-LocalUser `
               -Name $Username `
               -Password $SecurePassword `
@@ -117,13 +139,21 @@ jobs:
             -Member $Username `
             -ErrorAction SilentlyContinue
 
-          Write-Host "CloudPC configurado."
+          # Guardar para os próximos passos
+          "CLOUDPC_PASSWORD=$Password" >> $env:GITHUB_ENV
 
+          Write-Host "Usuario criado."
+
+      # ==========================================
+      # TAILSCALE
+      # ==========================================
       - name: Instalar Tailscale
         shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+
         run: |
+
           if (-not $env:TS_AUTHKEY) {
             Write-Error "Configure o Secret TS_AUTHKEY."
             exit 1
@@ -153,11 +183,9 @@ jobs:
             exit 1
           }
 
-          Write-Host "Conectando ao Tailscale..."
-
           & $Tailscale up `
             --authkey="$env:TS_AUTHKEY" `
-            --hostname="github-cloud-pc-v2"
+            --hostname="github-cloud-pc-v3"
 
           Start-Sleep -Seconds 10
 
@@ -172,10 +200,12 @@ jobs:
 
           Write-Host "Tailscale conectado."
 
+      # ==========================================
+      # AUTO RECOVERY
+      # ==========================================
       - name: Criar Auto Recovery
         shell: powershell
         run: |
-          Write-Host "Criando sistema de recuperacao..."
 
           $Recovery = "C:\ProgramData\CloudPC-Recovery.ps1"
 
@@ -215,10 +245,12 @@ jobs:
 
           Write-Host "Auto Recovery criado."
 
+      # ==========================================
+      # MODO DESEMPENHO
+      # ==========================================
       - name: Modo desempenho
         shell: powershell
         run: |
-          Write-Host "Aplicando modo desempenho..."
 
           powercfg /setactive SCHEME_MIN
 
@@ -243,17 +275,21 @@ jobs:
             -Value 0 `
             -ErrorAction SilentlyContinue
 
-          Write-Host "Modo desempenho aplicado."
+          Write-Host "Modo desempenho ativado."
 
+      # ==========================================
+      # ROBLOX STUDIO
+      # ==========================================
       - name: Preparar Roblox Studio
         shell: powershell
         run: |
-          Write-Host "Preparando ambiente para Roblox Studio..."
 
           New-Item `
             -Path "C:\CloudPC\RobloxProjects" `
             -ItemType Directory `
             -Force | Out-Null
+
+          Write-Host "Pasta RobloxProjects criada."
 
           $Apps = @(
             "RobloxStudioBeta",
@@ -261,25 +297,26 @@ jobs:
           )
 
           foreach ($App in $Apps) {
+
             Get-Process `
               -Name $App `
               -ErrorAction SilentlyContinue |
               ForEach-Object {
+
                 try {
                   $_.PriorityClass = "AboveNormal"
-                  Write-Host "$App otimizado."
                 }
-                catch {
-                  Write-Host "Nao foi possivel alterar $App."
-                }
+                catch {}
               }
           }
 
-          Write-Host "Preparacao concluida."
-
-      - name: Configurar redirecionamento RDP
+      # ==========================================
+      # CLIPBOARD + AUDIO RDP
+      # ==========================================
+      - name: Configurar redirecionamento
         shell: powershell
         run: |
+
           $RDP = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
 
           if (-not (Test-Path $RDP)) {
@@ -300,15 +337,14 @@ jobs:
             -Type DWord `
             -Value 0
 
-          Write-Host "Audio e clipboard preparados."
+          Write-Host "Clipboard e audio preparados."
 
-      - name: Diagnostico do PC
+      # ==========================================
+      # DIAGNOSTICO
+      # ==========================================
+      - name: Diagnostico
         shell: powershell
         run: |
-          Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "          DIAGNOSTICO CLOUD PC"
-          Write-Host "=========================================="
 
           $Computer = Get-CimInstance Win32_ComputerSystem
           $OS = Get-CimInstance Win32_OperatingSystem
@@ -323,73 +359,28 @@ jobs:
             2
           )
 
-          $RAMUsada = [math]::Round(
-            $RAMTotal - $RAMLivre,
-            2
-          )
-
           Write-Host ""
-          Write-Host "Sistema:"
-          Write-Host $OS.Caption
-
+          Write-Host "=========================================="
+          Write-Host "          DIAGNOSTICO"
+          Write-Host "=========================================="
           Write-Host ""
+          Write-Host "Sistema: $($OS.Caption)"
           Write-Host "RAM total: $RAMTotal GB"
-          Write-Host "RAM usada: $RAMUsada GB"
           Write-Host "RAM livre: $RAMLivre GB"
-
           Write-Host ""
-          Write-Host "CPU:"
-
-          Get-CimInstance Win32_Processor |
-            Select-Object -First 1 |
-            ForEach-Object {
-              Write-Host $_.Name
-            }
-
-          Write-Host ""
-          Write-Host "Disco C:"
-
-          Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" |
-            ForEach-Object {
-              $Total = [math]::Round($_.Size / 1GB, 2)
-              $Free = [math]::Round($_.FreeSpace / 1GB, 2)
-
-              Write-Host "Total: $Total GB"
-              Write-Host "Livre: $Free GB"
-            }
-
-          Write-Host ""
-          Write-Host "RDP:"
-          (Get-Service TermService).Status
-
-          Write-Host "Audio:"
-          (Get-Service Audiosrv).Status
-
-          Write-Host "Audio Endpoint:"
-          (Get-Service AudioEndpointBuilder).Status
-
-          Write-Host "Tailscale:"
-          (Get-Service Tailscale).Status
-
+          Write-Host "RDP: $((Get-Service TermService).Status)"
+          Write-Host "Audio: $((Get-Service Audiosrv).Status)"
+          Write-Host "Tailscale: $((Get-Service Tailscale).Status)"
           Write-Host ""
           Write-Host "=========================================="
 
-      - name: Preparar volume
+      # ==========================================
+      # DADOS DE CONEXAO
+      # ==========================================
+      - name: Mostrar dados
         shell: powershell
         run: |
-          Start-Service `
-            -Name "AudioEndpointBuilder" `
-            -ErrorAction SilentlyContinue
 
-          Start-Service `
-            -Name "Audiosrv" `
-            -ErrorAction SilentlyContinue
-
-          Write-Host "Sistema de audio pronto."
-
-      - name: Mostrar dados de conexao
-        shell: powershell
-        run: |
           Start-Sleep -Seconds 10
 
           $Tailscale = "C:\Program Files\Tailscale\tailscale.exe"
@@ -398,32 +389,35 @@ jobs:
 
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "          CLOUD PC V2 ONLINE"
+          Write-Host "        CLOUD PC V3 ONLINE"
           Write-Host "=========================================="
           Write-Host ""
           Write-Host "IP Tailscale:"
-          Write-Host $IP
+          Write-Host "$IP"
           Write-Host ""
           Write-Host "Usuario:"
           Write-Host "CloudPC"
           Write-Host ""
           Write-Host "Senha:"
-          Write-Host "Use o Secret CLOUDPC_PASSWORD"
+          Write-Host "$env:CLOUDPC_PASSWORD"
           Write-Host ""
           Write-Host "RDP: OK"
           Write-Host "Tailscale: OK"
           Write-Host "Audio: OK"
           Write-Host "Auto Recovery: OK"
           Write-Host "Desempenho: OK"
-          Write-Host "Roblox Studio: PREPARADO"
           Write-Host ""
           Write-Host "Duracao maxima: 360 minutos"
           Write-Host ""
           Write-Host "=========================================="
 
-      - name: Monitorar CPU RAM e tempo
+      # ==========================================
+      # MONITOR
+      # ==========================================
+      - name: Monitorar PC
         shell: powershell
         run: |
+
           $Inicio = Get-Date
           $Limite = $Inicio.AddMinutes(360)
 
@@ -438,7 +432,8 @@ jobs:
             }
 
             $CPU = (
-              Get-Counter '\Processor(_Total)\% Processor Time'
+              Get-Counter `
+                '\Processor(_Total)\% Processor Time'
             ).CounterSamples.CookedValue
 
             $CPU = [math]::Round($CPU, 1)
@@ -449,6 +444,7 @@ jobs:
             $FreeRAM = $OS.FreePhysicalMemory
 
             $RAM = 100 - (($FreeRAM / $TotalRAM) * 100)
+
             $RAM = [math]::Round($RAM, 1)
 
             Write-Host ""
